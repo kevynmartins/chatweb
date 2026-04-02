@@ -1,0 +1,8 @@
+{
+  "content": "test-file.txt",
+  "conversationId": "cmm0nb8mx000612ashxpjpnqk",
+  "type": "FILE",
+  "fileData": "data:text/plain;base64,VGhpcyBpcyBhIHRlc3QgZmlsZSBmb3IgZmlsZSB1cGxvYWQgZnVuY3Rpb25hbGl0eS4gQ3JlYXRlZCBvbiAyMDI2LTAyLTI1VDAwOjE5OjI0LjgzNVo=",
+  "fileName": "test-file.txt",
+  "fileType": "text/plain"
+}
