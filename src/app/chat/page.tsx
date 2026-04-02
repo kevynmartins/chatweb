@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { io } from "socket.io-client";
+import { supabase } from "@/lib/supabase";
 import { useRouter } from "next/navigation";
 import { Send, Hash, User, LogOut, Check, CheckCheck, Users, Plus, X, MessageSquare, Shield, Edit2, Bell, BellOff, Trash2, Mic, Square, Paperclip, Image as ImageIcon, Smile, Download, RotateCw, ChevronDown, ChevronLeft, UserPlus, Crown, Info, ZoomIn, Menu } from "lucide-react";
 
-let socket: any;
+// Socket replacement logic
+// let socket: any;
 
 export default function ChatPage() {
     const [conversations, setConversations] = useState<any[]>([]);
@@ -59,7 +60,6 @@ export default function ChatPage() {
             console.log("edit response", res.status, data);
             if (res.ok) {
                 setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, content: editingContent, editedAt: new Date().toISOString() } : m));
-                if (socket) socket.emit("message-edit", { conversationId: msg.conversationId, message: { ...msg, content: editingContent, editedAt: new Date().toISOString() } });
             } else {
                 console.error("edit error response:", data);
                 alert(`Não foi possível editar a mensagem: ${data.error || 'erro desconhecido'}`);
@@ -93,7 +93,6 @@ export default function ChatPage() {
         });
         if (res.ok) {
             setMessages(prev => prev.filter(m => m.id !== msg.id));
-            if (socket) socket.emit("message-delete", { conversationId: msg.conversationId, messageId: msg.id });
         }
     };
     const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -182,11 +181,33 @@ export default function ChatPage() {
             const updated = await res.json();
             setCurrentUser(updated);
             setIsProfileOpen(false);
-            socket.emit("profileUpdate", { userId: updated.id });
+            // socket.emit("profileUpdate", { userId: updated.id });
             fetchConversations(); // Refresh to update names in list
         } else {
             alert("Erro ao atualizar perfil");
         }
+    };
+
+    const handleStatusUpdate = ({ userId, status }: { userId: string, status: string }) => {
+        setConversations(prev => prev.map(c => {
+            if (c.isGroup) return c;
+            const updatedParticipants = c.participants?.map((p: any) =>
+                p.userId === userId ? { ...p, user: { ...p.user, status } } : p
+            );
+            return { ...c, participants: updatedParticipants };
+        }));
+
+        // Also update currentChat if it matches
+        setCurrentChat((prev: any) => {
+            if (!prev || prev.isGroup) return prev;
+            const isUserInChat = prev.participants?.some((p: any) => p.userId === userId);
+            if (!isUserInChat) return prev;
+
+            const updatedParticipants = prev.participants.map((p: any) =>
+                p.userId === userId ? { ...p, user: { ...p.user, status } } : p
+            );
+            return { ...prev, participants: updatedParticipants };
+        });
     };
 
     // Initial setup - only once on mount
@@ -202,15 +223,7 @@ export default function ChatPage() {
                 }
             });
 
-        // Initialize socket once
-        if (!socket) {
-            socket = io();
-            socket.on("connect", () => {
-                if (currentChatRef.current) {
-                    socket.emit("join", currentChatRef.current.id);
-                }
-            });
-        }
+        // Realtime setup handled in following effect
 
         if ("Notification" in window) {
             setNotificationPermission(Notification.permission);
@@ -223,162 +236,111 @@ export default function ChatPage() {
         };
     }, []);
 
-    // Handle Socket listeners, status and receipts
+    // Handle Supabase Realtime listeners, status and receipts
     useEffect(() => {
-        if (!socket || !currentUser) return;
+        if (!currentUser) return;
 
-        const emitOnline = () => {
-            console.log("Emitting userOnline for", currentUser.id);
-            socket.emit("userOnline", currentUser.id);
-        };
-
-        // Emit immediately if already connected
-        if (socket.connected) {
-            emitOnline();
-        }
-
-        // Also emit on every connect event
-        socket.on("connect", emitOnline);
-
-        const handleNewMessage = async (msg: any) => {
-            const activeChat = currentChatRef.current;
-            const isFromMe = msg.senderId === currentUser?.id;
-
-            // 1. If conversation doesn't exist in sidebar, fetch the list
-            const chatExists = conversationsRef.current.some(c => c.id === msg.conversationId);
-            if (!chatExists && !isFromMe) {
-                const res = await fetch(`/api/chat`);
-                if (res.ok) {
-                    const allConversations = await res.json();
-                    setConversations(allConversations);
-                    socket.emit("join", msg.conversationId);
-                }
-            }
-
-            // 2. Update State (Messages list or Conversation unread count)
-            if (activeChat && msg.conversationId === activeChat.id) {
-                setMessages((prev) => {
-                    const exists = prev.find(m => m.id === msg.id);
-                    if (exists) return prev;
-                    return [...prev, msg];
-                });
-
-                if (!isFromMe) {
-                    fetch("/api/chat/read", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ conversationId: activeChat.id })
-                    }).then(() => {
-                        socket.emit("read", { conversationId: activeChat.id, userId: currentUser?.id });
-                    });
-                }
-            } else if (!isFromMe) {
-                // Update conversation preview and unread count for background chats
-                setConversations(prev => prev.map(c => {
-                    if (c.id === msg.conversationId) {
-                        return { ...c, unreadCount: (c.unreadCount || 0) + 1, messages: [msg] };
-                    }
-                    return c;
-                }));
-            }
-
-            // Always update the sidebar preview (last message) for the sender as well
-            if (isFromMe) {
-                setConversations(prev => prev.map(c =>
-                    c.id === msg.conversationId ? { ...c, messages: [msg] } : c
-                ));
-            }
-
-            // 3. Trigger Notifications (Non-owned messages only)
-            if (!isFromMe) {
-                const isBackground = !document.hasFocus();
-                const isDifferentChat = !activeChat || msg.conversationId !== activeChat.id;
-
-                if (isBackground || isDifferentChat) {
-                    // Browser Notification
-                    if ("Notification" in window && Notification.permission === "granted") {
-                        new Notification(`Nova mensagem de ${msg.sender?.name || 'Sistema'}`, {
-                            body: msg.content,
-                            icon: msg.sender?.image
-                        });
-                    }
-
-                    // Audio Alert
-                    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
-                    audio.play().catch(() => { });
-                }
-            }
-        };
-
-        const handleReadReceipt = ({ conversationId, userId }: any) => {
-            const activeChat = currentChatRef.current;
-            if (activeChat && conversationId === activeChat.id) {
-                setMessages(prev => prev.map(m =>
-                    m.senderId !== userId ? { ...m, status: "READ" } : m
-                ));
-            }
-        };
-
-        const handleStatusUpdate = ({ userId, status }: { userId: string, status: string }) => {
-            setConversations(prev => prev.map(c => {
-                if (c.isGroup) return c;
-                const updatedParticipants = c.participants.map((p: any) =>
-                    p.userId === userId ? { ...p, user: { ...p.user, status } } : p
-                );
-                return { ...c, participants: updatedParticipants };
-            }));
-
-            // Also update currentChat if it matches
-            setCurrentChat((prev: any) => {
-                if (!prev || prev.isGroup) return prev;
-                const isUserInChat = prev.participants.some((p: any) => p.userId === userId);
-                if (!isUserInChat) return prev;
-
-                const updatedParticipants = prev.participants.map((p: any) =>
-                    p.userId === userId ? { ...p, user: { ...p.user, status } } : p
-                );
-                return { ...prev, participants: updatedParticipants };
+        // 1. Status Update: Marcando o usuário como ONLINE no banco
+        const setOnline = async () => {
+            await fetch("/api/profile", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: "ONLINE" })
             });
         };
+        setOnline();
 
-        const handleProfileUpdate = () => {
-            fetchConversations();
-        };
+        // 2. Subscrição para Mensagens (postgres_changes)
+        const channel = supabase.channel('chat_realtime')
+            .on('postgres_changes', {
+                event: 'INSERT',
+                schema: 'public',
+                table: 'Message'
+            }, async (payload) => {
+                const msg = payload.new as any;
+                const activeChat = currentChatRef.current;
+                const isFromMe = msg.senderId === currentUser?.id;
 
-        socket.on("message", handleNewMessage);
-        socket.on("read", handleReadReceipt);
-        socket.on("statusUpdate", handleStatusUpdate);
-        socket.on("profileUpdate", handleProfileUpdate);
-        socket.on("message-edit", (data: any) => {
-            // another user edited a message
-            setMessages(prev => prev.map(m => m.id === data.message.id ? { ...m, content: data.message.content, editedAt: data.message.editedAt } : m));
-        });
-        socket.on("message-delete", (data: any) => {
-            setMessages(prev => prev.filter(m => m.id !== data.messageId));
-        });
+                // Adicionar informações do remetente (payload não traz includes do Prisma)
+                // Buscamos o remetente se não for o usuário local
+                if (!isFromMe && !msg.sender) {
+                    const res = await fetch(`/api/users/${msg.senderId}`);
+                    if (res.ok) msg.sender = await res.json();
+                }
+
+                // Lógica de Atualização de UI
+                if (activeChat && msg.conversationId === activeChat.id) {
+                    setMessages(prev => {
+                        if (prev.find(m => m.id === msg.id)) return prev;
+                        return [...prev, msg];
+                    });
+                    
+                    if (!isFromMe) {
+                        fetch("/api/chat/read", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ conversationId: activeChat.id })
+                        });
+                    }
+                }
+
+                // Notificações e Atualização da Barra Lateral
+                if (!isFromMe) {
+                    setConversations(prev => prev.map(c => 
+                        c.id === msg.conversationId ? { ...c, unreadCount: (c.unreadCount || 0) + 1, messages: [msg] } : c
+                    ));
+
+                    if (!document.hasFocus() || (activeChat && msg.conversationId !== activeChat.id)) {
+                        if (Notification.permission === "granted") {
+                            new Notification(`Nova mensagem`, { body: msg.content });
+                        }
+                        new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3').play().catch(() => {});
+                    }
+                } else {
+                    setConversations(prev => prev.map(c => 
+                        c.id === msg.conversationId ? { ...c, messages: [msg] } : c
+                    ));
+                }
+            })
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'Message'
+            }, (payload) => {
+                const updated = payload.new as any;
+                setMessages(prev => prev.map(m => m.id === updated.id ? { ...m, ...updated } : m));
+            })
+            .on('postgres_changes', {
+                event: 'DELETE',
+                schema: 'public',
+                table: 'Message'
+            }, (payload) => {
+                setMessages(prev => prev.filter(m => m.id !== payload.old.id));
+            })
+            .on('postgres_changes', {
+                event: 'UPDATE',
+                schema: 'public',
+                table: 'User'
+            }, (payload) => {
+                const updatedUser = payload.new as any;
+                handleStatusUpdate({ userId: updatedUser.id, status: updatedUser.status });
+            })
+            .subscribe();
 
         return () => {
-            socket.off("message", handleNewMessage);
-            socket.off("read", handleReadReceipt);
-            socket.off("statusUpdate", handleStatusUpdate);
-            socket.off("profileUpdate", handleProfileUpdate);
-            socket.off("message-edit");
-            socket.off("message-delete");
+            supabase.removeChannel(channel);
         };
-    }, [currentUser]); // Listeners and identity updated when currentUser is ready
+    }, [currentUser]);
 
-    // Handle room joining separately
+    // Handle receipts
     useEffect(() => {
-        if (!currentChat || !socket) return;
-        socket.emit("join", currentChat.id);
+        if (!currentChat || !currentUser) return;
 
         // Mark as read when entering chat
         fetch("/api/chat/read", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ conversationId: currentChat.id })
-        }).then(() => {
-            socket.emit("read", { conversationId: currentChat.id, userId: currentUser?.id });
         });
     }, [currentChat, currentUser]);
 
@@ -468,9 +430,6 @@ export default function ChatPage() {
             if (res.ok) {
                 const savedMsg = await res.json();
                 setMessages(prev => [...prev, savedMsg]);
-                if (socket) {
-                    socket.emit("message", savedMsg);
-                }
             }
         } catch (error) {
             console.error("Erro ao enviar imagem:", error);
@@ -535,9 +494,6 @@ export default function ChatPage() {
             if (res.ok) {
                 const savedMsg = await res.json();
                 setMessages(prev => [...prev, savedMsg]);
-                if (socket) {
-                    socket.emit("message", savedMsg);
-                }
             }
         } catch (error) {
             console.error("Erro ao enviar arquivo:", error);
@@ -593,9 +549,6 @@ export default function ChatPage() {
             if (res.ok) {
                 const savedMsg = await res.json();
                 setMessages(prev => prev.map(m => m.id === tempId ? savedMsg : m));
-                if (socket) {
-                    socket.emit("message", savedMsg);
-                }
             } else {
                 setMessages(prev => prev.filter(m => m.id !== tempId));
             }
@@ -730,7 +683,6 @@ export default function ChatPage() {
         if (res.ok) {
             const savedMsg = await res.json();
             setMessages(prev => prev.map(m => m.id === tempId ? savedMsg : m));
-            socket.emit("message", savedMsg);
         } else {
             setMessages(prev => prev.filter(m => m.id !== tempId));
             alert("Erro ao enviar áudio");

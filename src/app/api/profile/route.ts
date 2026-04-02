@@ -9,11 +9,12 @@ export async function PATCH(request: Request) {
             return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
         }
 
-        const { name, image } = await request.json();
+        const { name, image, status } = await request.json();
 
         const updatedData: any = {};
         if (name) updatedData.name = name;
         if (image !== undefined) updatedData.image = image;
+        if (status) updatedData.status = status;
 
         const user = await prisma.user.update({
             where: { id: session.id },
