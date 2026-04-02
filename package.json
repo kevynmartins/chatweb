@@ -17,6 +17,7 @@
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "autoprefixer": "latest",
+    "better-sqlite3": "^11.10.0",
     "clsx": "latest",
     "framer-motion": "latest",
     "lucide-react": "latest",
