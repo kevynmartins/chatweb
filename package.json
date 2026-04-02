@@ -13,6 +13,9 @@
   },
   "dependencies": {
     "@prisma/client": "5.22.0",
+    "@types/node": "^25.3.0",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
     "autoprefixer": "latest",
     "clsx": "latest",
     "framer-motion": "latest",
@@ -26,12 +29,7 @@
     "socket.io-client": "latest",
     "tailwind-merge": "latest",
     "tailwindcss": "3.4.17",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
-  },
-  "devDependencies": {
-    "@types/node": "^25.3.0",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "ts-node": "^10.9.2"
   }
 }
